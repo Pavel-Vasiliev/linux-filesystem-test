@@ -1,60 +1,132 @@
 #!/usr/bin/perl -w
+use strict;
+use warnings;
 use Time::HiRes qw(gettimeofday);
 
-$ii = 50; #number of folgers
-$jj = 100; #number of subfolgers
-print "Linux filesystems disk test\n\n";
-system('mkdir ./disk_test_data_dir');
+my $ii = 50; #number of folders
+my $jj = 100; #number of subfolders
+my $num_threads = 4;
 
-print "Creating a directory structure\n";
-system('sync');
-$time1 = gettimeofday/10*10;
-for($i=0;$i<$ii;$i++ ){
-    $d1name = "./disk_test_data_dir/".$i;
-    system('mkdir', $d1name);
+print "Linux filesystems disk test (Parallel $num_threads workers)\n\n";
 
-    for($j=0;$j<$jj;$j++ ){
-	$d2name = "./disk_test_data_dir/".$i."/".$j;
-	system('mkdir', $d2name);
+my @pids;
+for my $thread (1..$num_threads) {
+    my $pid = fork();
+    die "Could not fork: $!" unless defined $pid;
+
+    if ($pid == 0) {
+        # Child process
+        my $root = "./disk_test_data_dir_$thread";
+        system('mkdir', '-p', $root);
+
+        my ($t_dir, $t_write, $t_read, $t_rm);
+        my ($time1, $time2);
+
+        # Phase 1: Creating a directory structure
+        system('sync');
+        $time1 = gettimeofday();
+        for(my $i=0;$i<$ii;$i++ ){
+            my $d1name = "$root/".$i;
+            system('mkdir', $d1name);
+
+            for(my $j=0;$j<$jj;$j++ ){
+                my $d2name = "$root/".$i."/".$j;
+                system('mkdir', $d2name);
+            }
+        }
+        system('sync');
+        $time2 = gettimeofday();
+        $t_dir = $time2 - $time1;
+
+        # Phase 2: Creating files in directories
+        system('sync');
+        $time1 = gettimeofday();
+        for(my $i=0;$i<$ii;$i++ ){
+            for(my $j=0;$j<$jj;$j++ ){
+                my $f3name = "$root/".$i."/".$j."/file";
+                my $dd = "dd if=/dev/urandom of=$f3name bs=512 count=8 > /dev/null 2>&1";
+                system($dd);
+            }
+        }
+        system('sync');
+        $time2 = gettimeofday();
+        $t_write = $time2 - $time1;
+
+        # Phase 3: Reading files from directories
+        system('sync');
+        $time1 = gettimeofday();
+        for(my $i=0;$i<$ii;$i++ ){
+            for(my $j=0;$j<$jj;$j++ ){
+                my $f3name = "$root/".$i."/".$j."/file";
+                my $cat = "cat $f3name > /dev/null 2>&1";
+                system($cat);
+            }
+        }
+        system('sync');
+        $time2 = gettimeofday();
+        $t_read = $time2 - $time1;
+
+        # Phase 4: Remove all test data
+        system('sync');
+        $time1 = gettimeofday();
+        system("rm -r $root");
+        system('sync');
+        $time2 = gettimeofday();
+        $t_rm = $time2 - $time1;
+
+        # Write thread results to temporary file
+        open(my $fh, '>', "results_${thread}.txt") or die $!;
+        print $fh "$t_dir\n$t_write\n$t_read\n$t_rm\n";
+        close $fh;
+
+        exit 0;
+    } else {
+        # Parent process
+        push @pids, $pid;
     }
 }
-system('sync');
-$time2 = gettimeofday/10*10;
-print ($time2-$time1,"\n\n");
 
-print "Creating files in directories\n";
-system('sync');
-$time1 = gettimeofday/10*10;
-for($i=0;$i<$ii;$i++ ){
-    for($j=0;$j<$jj;$j++ ){
-	$f3name = "./disk_test_data_dir/".$i."/".$j."/file";
-	$dd = "dd if=/dev/urandom of=$f3name bs=512 count=8  > /dev/null 2>&1";
-	system ($dd);
+print "Waiting for $num_threads workers to complete benchmark...\n\n";
+
+for my $pid (@pids) {
+    waitpid($pid, 0);
+}
+
+my $sum_dir = 0;
+my $sum_write = 0;
+my $sum_read = 0;
+my $sum_rm = 0;
+
+for my $thread (1..$num_threads) {
+    if (open(my $fh, '<', "results_${thread}.txt")) {
+        my @lines = <$fh>;
+        close $fh;
+        chomp @lines;
+
+        $sum_dir += $lines[0] || 0;
+        $sum_write += $lines[1] || 0;
+        $sum_read += $lines[2] || 0;
+        $sum_rm += $lines[3] || 0;
+
+        unlink("results_${thread}.txt");
+    } else {
+        warn "Could not read results for thread $thread\n";
     }
 }
-system('sync');
-$time2 = gettimeofday/10*10;
-print ($time2-$time1,"\n\n");
 
-print "Reading files from directories\n";
-system('sync');
-$time1 = gettimeofday/10*10;
-for($i=0;$i<$ii;$i++ ){
-    for($j=0;$j<$jj;$j++ ){
-	$f3name = "./disk_test_data_dir/".$i."/".$j."/file";
-	$cat = "cat $f3name  > /dev/null 2>&1";
+my $avg_dir = $sum_dir / $num_threads;
+my $avg_write = $sum_write / $num_threads;
+my $avg_read = $sum_read / $num_threads;
+my $avg_rm = $sum_rm / $num_threads;
 
-	system ($cat);
-    }
-}
-system('sync');
-$time2 = gettimeofday/10*10;
-print ($time2-$time1,"\n\n");
+print "--- Results (Sum of $num_threads workers) ---\n";
+printf "Creating a directory structure : %.4f s\n", $sum_dir;
+printf "Creating files in directories  : %.4f s\n", $sum_write;
+printf "Reading files from directories : %.4f s\n", $sum_read;
+printf "Remove all test data           : %.4f s\n\n", $sum_rm;
 
-print "Remove all test data\n";
-system('sync');
-$time1 = gettimeofday/10*10;
-system('rm -r ./disk_test_data_dir');
-system('sync');
-$time2 = gettimeofday/10*10;
-print ($time2-$time1,"\n\n");
+print "--- Results (Average per worker) ---\n";
+printf "Creating a directory structure : %.4f s\n", $avg_dir;
+printf "Creating files in directories  : %.4f s\n", $avg_write;
+printf "Reading files from directories : %.4f s\n", $avg_read;
+printf "Remove all test data           : %.4f s\n\n", $avg_rm;
