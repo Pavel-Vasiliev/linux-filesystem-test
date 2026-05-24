@@ -2,12 +2,53 @@
 use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
+use Getopt::Long;
 
-my $ii = 50; #number of folders
-my $jj = 100; #number of subfolders
-my $num_threads = 4;
+# Default profile: medium (large CMS site)
+my $profile = 'medium';
 
-print "Linux filesystems disk test (Parallel $num_threads workers)\n\n";
+# Parse command line arguments
+GetOptions(
+    'profile|p=s' => \$profile,
+    'help|h'      => sub { print_help(); exit 0; }
+);
+
+# Define CMS profiles
+my %profiles = (
+    small => {
+        ii => 24,      # Folders (2 years of monthly folders)
+        jj => 30,      # Subfolders (30 files per month)
+        threads => 8,  # Moderate concurrent users
+        desc => 'Small/Medium CMS site (720 files, 8 concurrent users)'
+    },
+    medium => {
+        ii => 60,      # Folders (5 years × 12 months)
+        jj => 100,     # Subfolders (100 files per month)
+        threads => 16, # High concurrent traffic
+        desc => 'Large CMS site (6,000 files, 16 concurrent users)'
+    },
+    enterprise => {
+        ii => 120,     # Folders (10 years of archives)
+        jj => 200,     # Subfolders (200 media files per month)
+        threads => 32, # Enterprise-level concurrency
+        desc => 'Enterprise media site (24,000 files, 32 concurrent users)'
+    }
+);
+
+# Validate profile
+if (!exists $profiles{$profile}) {
+    warn "Unknown profile: '$profile'. Using 'medium' profile.\n";
+    $profile = 'medium';
+}
+
+# Set parameters based on profile
+my $ii = $profiles{$profile}{ii};
+my $jj = $profiles{$profile}{jj};
+my $num_threads = $profiles{$profile}{threads};
+
+print "Linux filesystems disk test (CMS Profile: $profile)\n";
+print "$profiles{$profile}{desc}\n";
+print "Parallel $num_threads workers\n\n";
 
 my @pids;
 for my $thread (1..$num_threads) {
@@ -130,3 +171,35 @@ printf "Creating a directory structure : %.4f s\n", $avg_dir;
 printf "Creating files in directories  : %.4f s\n", $avg_write;
 printf "Reading files from directories : %.4f s\n", $avg_read;
 printf "Remove all test data           : %.4f s\n\n", $avg_rm;
+
+sub print_help {
+    print <<"HELP";
+Linux Filesystem Disk Test - CMS Profile Edition
+
+Usage: $0 [OPTIONS]
+
+Options:
+  -p, --profile PROFILE    Test profile (small, medium, enterprise)
+                           Default: medium
+  -h, --help               Display this help message
+
+Available Profiles:
+  small       Small/Medium CMS site
+              24 folders × 30 subfolders = 720 files
+              8 concurrent workers
+
+  medium      Large CMS site (DEFAULT)
+              60 folders × 100 subfolders = 6,000 files
+              16 concurrent workers
+
+  enterprise  Enterprise media site
+              120 folders × 200 subfolders = 24,000 files
+              32 concurrent workers
+
+Examples:
+  $0                     # Run with medium profile (default)
+  $0 --profile small     # Run small CMS profile
+  $0 -p enterprise       # Run enterprise profile
+
+HELP
+}
